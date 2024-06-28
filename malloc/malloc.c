@@ -28,6 +28,7 @@ void munmap_to_system(void *ptr, size_t size);
 typedef struct my_metadata_t {
   size_t size;
   struct my_metadata_t *next;
+  struct my_metadata_t *prev;
 } my_metadata_t;
 
 typedef struct my_heap_t {
@@ -45,18 +46,47 @@ my_heap_t my_heap;
 //
 
 void my_add_to_free_list(my_metadata_t *metadata) {
-  assert(!metadata->next);
+  assert(!metadata->next && !metadata->prev);
   metadata->next = my_heap.free_head;
+  if (my_heap.free_head) {
+    my_heap.free_head->prev = metadata;
+  }
   my_heap.free_head = metadata;
+  metadata->prev = NULL;
 }
 
-void my_remove_from_free_list(my_metadata_t *metadata, my_metadata_t *prev) {
-  if (prev) {
-    prev->next = metadata->next;
+void my_remove_from_free_list(my_metadata_t *metadata) {
+  if (metadata->prev) {
+    metadata->prev->next = metadata->next;
   } else {
     my_heap.free_head = metadata->next;
   }
-  metadata->next = NULL;
+  if (metadata->next) {
+    metadata->next->prev = metadata->prev;
+  }
+  metadata->next = metadata->prev = NULL;
+}
+
+void my_coalesce(my_metadata_t *metadata) {
+  // Coalesce with next block if possible
+  my_metadata_t *next_metadata = (my_metadata_t *)((char *)metadata + metadata->size + sizeof(my_metadata_t));
+  // Ensure next_metadata is within the valid range and is part of the free list
+  if ((char *)next_metadata < (char *)metadata + metadata->size + sizeof(my_metadata_t) + 4096) {
+    if (next_metadata->prev || next_metadata == my_heap.free_head) {
+      my_remove_from_free_list(next_metadata);
+      metadata->size += next_metadata->size + sizeof(my_metadata_t);
+    }
+  }
+
+  // Coalesce with previous block if possible
+  my_metadata_t *prev_metadata = metadata->prev;
+  if (prev_metadata && (char *)prev_metadata + prev_metadata->size + sizeof(my_metadata_t) == (char *)metadata) {
+    my_remove_from_free_list(prev_metadata);
+    prev_metadata->size += metadata->size + sizeof(my_metadata_t);
+    metadata = prev_metadata;
+  }
+
+  my_add_to_free_list(metadata);
 }
 
 //
@@ -68,6 +98,7 @@ void my_initialize() {
   my_heap.free_head = &my_heap.dummy;
   my_heap.dummy.size = 0;
   my_heap.dummy.next = NULL;
+  my_heap.dummy.prev = NULL;
 }
 
 // my_malloc() is called every time an object is allocated.
@@ -76,15 +107,20 @@ void my_initialize() {
 // mmap_from_system() / munmap_to_system().
 void *my_malloc(size_t size) {
   my_metadata_t *metadata = my_heap.free_head;
-  my_metadata_t *prev = NULL;
+  my_metadata_t *best_fit = NULL;
+
   // First-fit: Find the first free slot the object fits.
   // TODO: Update this logic to Best-fit!
-  while (metadata && metadata->size < size) {
-    prev = metadata;
+  while (metadata) {
+    if (metadata->size >= size && (!best_fit || metadata->size < best_fit->size)) {
+      best_fit = metadata;
+    }
     metadata = metadata->next;
   }
   // now, metadata points to the first free slot
   // and prev is the previous entry.
+
+  metadata = best_fit;
 
   if (!metadata) {
     // There was no free slot available. We need to request a new memory region
@@ -96,9 +132,10 @@ void *my_malloc(size_t size) {
     //     <---------------------->
     //            buffer_size
     size_t buffer_size = 4096;
-    my_metadata_t *metadata = (my_metadata_t *)mmap_from_system(buffer_size);
+    metadata = (my_metadata_t *)mmap_from_system(buffer_size);
     metadata->size = buffer_size - sizeof(my_metadata_t);
     metadata->next = NULL;
+    metadata->prev = NULL;
     // Add the memory region to the free list.
     my_add_to_free_list(metadata);
     // Now, try my_malloc() again. This should succeed.
@@ -113,7 +150,7 @@ void *my_malloc(size_t size) {
   void *ptr = metadata + 1;
   size_t remaining_size = metadata->size - size;
   // Remove the free slot from the free list.
-  my_remove_from_free_list(metadata, prev);
+  my_remove_from_free_list(metadata);
 
   if (remaining_size > sizeof(my_metadata_t)) {
     // Shrink the metadata for the allocated object
@@ -132,6 +169,7 @@ void *my_malloc(size_t size) {
     my_metadata_t *new_metadata = (my_metadata_t *)((char *)ptr + size);
     new_metadata->size = remaining_size - sizeof(my_metadata_t);
     new_metadata->next = NULL;
+    new_metadata->prev = NULL;
     // Add the remaining free slot to the free list.
     my_add_to_free_list(new_metadata);
   }
@@ -148,7 +186,10 @@ void my_free(void *ptr) {
   //     metadata   ptr
   my_metadata_t *metadata = (my_metadata_t *)ptr - 1;
   // Add the free slot to the free list.
+  metadata->next = NULL;
+  metadata->prev = NULL;
   my_add_to_free_list(metadata);
+  // my_coalesce(metadata);
 }
 
 // This is called at the end of each challenge.
