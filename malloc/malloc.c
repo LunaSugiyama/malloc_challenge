@@ -71,21 +71,26 @@ void my_coalesce(my_metadata_t *metadata) {
   // Coalesce with next block if possible
   my_metadata_t *next_metadata = (my_metadata_t *)((char *)metadata + metadata->size + sizeof(my_metadata_t));
   // Ensure next_metadata is within the valid range and is part of the free list
-  if ((char *)next_metadata < (char *)metadata + metadata->size + sizeof(my_metadata_t) + 4096) {
-    if (next_metadata->prev || next_metadata == my_heap.free_head) {
-      my_remove_from_free_list(next_metadata);
-      metadata->size += next_metadata->size + sizeof(my_metadata_t);
+  my_metadata_t *free_head = my_heap.free_head;
+  bool found = false;
+
+  while (free_head) {
+    if (free_head == next_metadata) {
+      found = true;
+      break;
     }
+    free_head = free_head->next;
   }
 
-  // Coalesce with previous block if possible
-  my_metadata_t *prev_metadata = metadata->prev;
-  if (prev_metadata && (char *)prev_metadata + prev_metadata->size + sizeof(my_metadata_t) == (char *)metadata) {
-    my_remove_from_free_list(prev_metadata);
-    prev_metadata->size += metadata->size + sizeof(my_metadata_t);
-    metadata = prev_metadata;
+  if (found) {
+    my_remove_from_free_list(next_metadata);
+    metadata->size += next_metadata->size + sizeof(my_metadata_t);
   }
 
+// // Coalesce with previous block if possible
+
+  metadata->next = NULL;
+  metadata->prev = NULL;
   my_add_to_free_list(metadata);
 }
 
@@ -137,7 +142,8 @@ void *my_malloc(size_t size) {
     metadata->next = NULL;
     metadata->prev = NULL;
     // Add the memory region to the free list.
-    my_add_to_free_list(metadata);
+    // my_add_to_free_list(metadata);
+    my_coalesce(metadata);
     // Now, try my_malloc() again. This should succeed.
     return my_malloc(size);
   }
@@ -171,7 +177,8 @@ void *my_malloc(size_t size) {
     new_metadata->next = NULL;
     new_metadata->prev = NULL;
     // Add the remaining free slot to the free list.
-    my_add_to_free_list(new_metadata);
+    // my_add_to_free_list(new_metadata);
+    my_coalesce(new_metadata);
   }
   return ptr;
 }
@@ -188,8 +195,8 @@ void my_free(void *ptr) {
   // Add the free slot to the free list.
   metadata->next = NULL;
   metadata->prev = NULL;
-  my_add_to_free_list(metadata);
-  // my_coalesce(metadata);
+  // my_add_to_free_list(metadata);
+  my_coalesce(metadata);
 }
 
 // This is called at the end of each challenge.
